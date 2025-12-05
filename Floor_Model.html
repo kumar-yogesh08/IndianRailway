@@ -1,0 +1,396 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Indian Railway Washroom Floor Concept</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #1a1a1a; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+        canvas { display: block; }
+        #ui-container {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            color: white;
+            background: rgba(0, 0, 0, 0.7);
+            padding: 20px;
+            border-radius: 8px;
+            max-width: 350px;
+            border-left: 4px solid #3498db;
+            backdrop-filter: blur(5px);
+        }
+        h1 { margin: 0 0 10px 0; font-size: 1.2rem; text-transform: uppercase; letter-spacing: 1px; }
+        p { font-size: 0.9rem; line-height: 1.4; color: #ddd; }
+        .controls { margin-top: 15px; display: flex; flex-direction: column; gap: 10px; }
+        button {
+            background: #3498db;
+            color: white;
+            border: none;
+            padding: 10px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-weight: bold;
+            transition: background 0.3s;
+        }
+        button:hover { background: #2980b9; }
+        button.active { background: #27ae60; }
+        
+        .legend { margin-top: 15px; font-size: 0.8rem; }
+        .legend-item { display: flex; align-items: center; margin-bottom: 5px; }
+        .color-box { width: 12px; height: 12px; margin-right: 8px; border-radius: 2px; }
+        
+        #loading {
+            position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+            color: white; font-size: 1.5rem; pointer-events: none;
+            transition: opacity 0.5s;
+        }
+    </style>
+    <!-- Load Three.js from CDN -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <!-- Load OrbitControls -->
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+</head>
+<body>
+
+    <div id="loading">Generating Geometry...</div>
+
+    <div id="ui-container">
+        <h1>Hygiene Floor System</h1>
+        <p>Proposed solution for Indian Railway Washrooms to solve water stagnation.</p>
+        <p><strong>Design:</strong> A perforated "Connect Four" style top sheet allows water to pass instantly. A slanted sub-floor underneath catches and drains the water to a single outlet.</p>
+        
+        <div class="controls">
+            <button id="toggle-water" class="active">Water Simulation: ON</button>
+            <button id="toggle-top">Toggle Top Floor Visibility</button>
+            <button id="reset-cam">Reset Camera</button>
+        </div>
+
+        <div class="legend">
+            <div class="legend-item"><div class="color-box" style="background:#aaa;"></div>Top: Perforated Steel</div>
+            <div class="legend-item"><div class="color-box" style="background:#444;"></div>Sub: Slanted Drainage</div>
+            <div class="legend-item"><div class="color-box" style="background:#00ffff;"></div>Fluid Dynamics</div>
+        </div>
+    </div>
+
+    <script>
+        // --- Configuration ---
+        const CONFIG = {
+            floorSize: 150,       // 150x150 units (approx cm)
+            holeRadius: 3.5,      // Slightly larger for visual clarity
+            holeSpacing: 10,      // Distance between hole centers
+            floorThickness: 2,    // Thickness of the top sheet
+            subFloorDepth: 15,    // How deep the subfloor starts
+            slopeAngle: 0.15,     // Radians of the subfloor slope
+            waterCount: 400,      // Max particles
+            rainSpeed: 1.5
+        };
+
+        let scene, camera, renderer, controls;
+        let topFloorMesh, subFloorMesh, drainPipe;
+        let waterParticles = [];
+        let isWaterOn = true;
+        let isTopVisible = true;
+
+        function init() {
+            // 1. Scene Setup
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x222222);
+            scene.fog = new THREE.Fog(0x222222, 100, 500);
+
+            // 2. Camera
+            camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 1, 1000);
+            camera.position.set(0, 120, 180);
+
+            // 3. Renderer
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.shadowMap.enabled = true;
+            renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+            document.body.appendChild(renderer.domElement);
+
+            // 4. Controls
+            controls = new THREE.OrbitControls(camera, renderer.domElement);
+            controls.enableDamping = true;
+            controls.dampingFactor = 0.05;
+            controls.maxPolarAngle = Math.PI / 2 - 0.1; // Don't go below ground
+
+            // 5. Lighting
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.4);
+            scene.add(ambientLight);
+
+            const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
+            dirLight.position.set(50, 100, 50);
+            dirLight.castShadow = true;
+            dirLight.shadow.mapSize.width = 2048;
+            dirLight.shadow.mapSize.height = 2048;
+            dirLight.shadow.camera.near = 0.5;
+            dirLight.shadow.camera.far = 500;
+            dirLight.shadow.camera.left = -100;
+            dirLight.shadow.camera.right = 100;
+            dirLight.shadow.camera.top = 100;
+            dirLight.shadow.camera.bottom = -100;
+            scene.add(dirLight);
+
+            // Point light for shiny reflection on steel
+            const pointLight = new THREE.PointLight(0x3498db, 0.5, 100);
+            pointLight.position.set(0, 20, 0);
+            scene.add(pointLight);
+
+            createGeometry();
+            initWaterSystem();
+            setupEvents();
+
+            // Hide loading
+            document.getElementById('loading').style.opacity = 0;
+            
+            animate();
+        }
+
+        function createGeometry() {
+            // --- Material Setup ---
+            const steelMaterial = new THREE.MeshStandardMaterial({
+                color: 0xaaaaaa,
+                metalness: 0.7,
+                roughness: 0.2,
+                side: THREE.DoubleSide
+            });
+
+            const subFloorMaterial = new THREE.MeshStandardMaterial({
+                color: 0x333333,
+                roughness: 0.9
+            });
+
+            // --- 1. Top Floor (The "Connect Four" Sheet) ---
+            // Creating a shape with holes
+            const shape = new THREE.Shape();
+            const s = CONFIG.floorSize / 2;
+            
+            // Draw the main square
+            shape.moveTo(-s, -s);
+            shape.lineTo(s, -s);
+            shape.lineTo(s, s);
+            shape.lineTo(-s, s);
+            shape.lineTo(-s, -s);
+
+            // Punch holes
+            const holeCount = Math.floor(CONFIG.floorSize / CONFIG.holeSpacing);
+            const startOffset = -s + (CONFIG.holeSpacing / 2);
+
+            for (let i = 0; i < holeCount; i++) {
+                for (let j = 0; j < holeCount; j++) {
+                    const hx = startOffset + i * CONFIG.holeSpacing;
+                    const hy = startOffset + j * CONFIG.holeSpacing;
+
+                    const holePath = new THREE.Path();
+                    holePath.absarc(hx, hy, CONFIG.holeRadius, 0, Math.PI * 2, true);
+                    shape.holes.push(holePath);
+                }
+            }
+
+            const extrudeSettings = {
+                steps: 1,
+                depth: CONFIG.floorThickness,
+                bevelEnabled: true,
+                bevelThickness: 0.2,
+                bevelSize: 0.2,
+                bevelSegments: 2
+            };
+
+            const topGeo = new THREE.ExtrudeGeometry(shape, extrudeSettings);
+            // Rotate to lie flat (Extrude creates along Z, we want Y up)
+            topGeo.rotateX(Math.PI / 2);
+            // Center the geometry vertically so top is at y=0
+            topGeo.translate(0, -CONFIG.floorThickness, 0);
+
+            topFloorMesh = new THREE.Mesh(topGeo, steelMaterial);
+            topFloorMesh.receiveShadow = true;
+            topFloorMesh.castShadow = true;
+            scene.add(topFloorMesh);
+
+            // --- 2. Sub Floor (The Slant) ---
+            const subGeo = new THREE.BoxGeometry(CONFIG.floorSize, 2, CONFIG.floorSize);
+            subFloorMesh = new THREE.Mesh(subGeo, subFloorMaterial);
+            
+            // Position it below
+            subFloorMesh.position.y = -CONFIG.subFloorDepth;
+            
+            // Apply Slant (Rotate around Z axis slightly)
+            subFloorMesh.rotation.z = CONFIG.slopeAngle; 
+            
+            // Add walls to contain the water visually (Sides)
+            const wallMat = new THREE.MeshStandardMaterial({ color: 0x222222, transparent: true, opacity: 0.5 });
+            const leftWall = new THREE.Mesh(new THREE.BoxGeometry(2, 30, CONFIG.floorSize), wallMat);
+            leftWall.position.set(-s, -15, 0);
+            scene.add(leftWall);
+
+            // Right Wall (Lower side of slope)
+            const rightWall = new THREE.Mesh(new THREE.BoxGeometry(2, 30, CONFIG.floorSize), wallMat);
+            rightWall.position.set(s, -15, 0);
+            scene.add(rightWall);
+
+            subFloorMesh.receiveShadow = true;
+            scene.add(subFloorMesh);
+
+            // --- 3. Drain Indicator ---
+            const drainGeo = new THREE.CylinderGeometry(5, 5, 20, 32);
+            const drainMat = new THREE.MeshLambertMaterial({ color: 0x111111 });
+            drainPipe = new THREE.Mesh(drainGeo, drainMat);
+            // Calculate low point of the slope
+            const lowPointX = (CONFIG.floorSize / 2) * Math.cos(CONFIG.slopeAngle);
+            const lowPointY = -CONFIG.subFloorDepth - ((CONFIG.floorSize/2) * Math.sin(CONFIG.slopeAngle));
+            
+            drainPipe.position.set(s - 10, lowPointY - 5, 0);
+            drainPipe.rotation.z = CONFIG.slopeAngle;
+            scene.add(drainPipe);
+        }
+
+        function initWaterSystem() {
+            const waterGeo = new THREE.SphereGeometry(0.8, 8, 8);
+            const waterMat = new THREE.MeshPhongMaterial({ 
+                color: 0x00ffff, 
+                shininess: 100,
+                specular: 0xffffff
+            });
+
+            // Create a pool of particles
+            for(let i=0; i<CONFIG.waterCount; i++) {
+                const mesh = new THREE.Mesh(waterGeo, waterMat);
+                resetParticle(mesh);
+                // Stagger start times
+                mesh.userData.active = false; 
+                mesh.visible = false;
+                setTimeout(() => { mesh.userData.active = true; }, Math.random() * 5000);
+                
+                scene.add(mesh);
+                waterParticles.push(mesh);
+            }
+        }
+
+        function resetParticle(mesh) {
+            const s = (CONFIG.floorSize / 2) - 5;
+            mesh.position.set(
+                (Math.random() * s * 2) - s,
+                20 + Math.random() * 20, // Start high above
+                (Math.random() * s * 2) - s
+            );
+            mesh.visible = false;
+            // Velocity vector
+            mesh.userData.velocity = new THREE.Vector3(0, -CONFIG.rainSpeed - Math.random(), 0);
+            mesh.userData.state = 'falling'; // falling, surface, draining
+        }
+
+        function updateWater() {
+            if(!isWaterOn) return;
+
+            const slopeSin = Math.sin(CONFIG.slopeAngle);
+            const slopeCos = Math.cos(CONFIG.slopeAngle);
+
+            waterParticles.forEach(p => {
+                if(!p.userData.active) return;
+                p.visible = true;
+
+                // Move particle
+                p.position.add(p.userData.velocity);
+
+                // LOGIC 1: Interacting with Top Floor (y = 0 approx)
+                if (p.userData.state === 'falling' && p.position.y < 0 && p.position.y > -CONFIG.floorThickness) {
+                    // Check if x/z matches a hole
+                    // Our grid logic:
+                    // x relative to grid start
+                    const s = CONFIG.floorSize / 2;
+                    const startOffset = -s + (CONFIG.holeSpacing / 2);
+                    
+                    // Simple mod math to find distance to nearest hole center
+                    // Shift coordinates to positive for modulo
+                    const localX = p.position.x + s;
+                    const localZ = p.position.z + s;
+                    
+                    const remX = Math.abs((localX % CONFIG.holeSpacing) - (CONFIG.holeSpacing/2));
+                    const remZ = Math.abs((localZ % CONFIG.holeSpacing) - (CONFIG.holeSpacing/2));
+                    
+                    const distToCenter = Math.sqrt(remX*remX + remZ*remZ);
+
+                    if (distToCenter < CONFIG.holeRadius) {
+                        // HIT HOLE: Pass through
+                        // Slightly randomize path
+                        p.position.x += (Math.random() - 0.5) * 0.5;
+                        p.position.z += (Math.random() - 0.5) * 0.5;
+                    } else {
+                        // HIT STEEL: Bounce or Reset
+                        // Splash effect reset
+                        resetParticle(p);
+                    }
+                }
+
+                // LOGIC 2: Hitting Subfloor
+                // Calculate subfloor height at this X position
+                // Center of rotation is 0, -subFloorDepth, 0
+                // Height diff due to slope = x * tan(angle) roughly (for small angles)
+                // More precise: Plane equation
+                
+                // Pure geometry height of the slanted plane at x:
+                // slope goes down towards positive X
+                const planeY = -CONFIG.subFloorDepth - (p.position.x * Math.tan(CONFIG.slopeAngle));
+
+                if (p.position.y <= planeY + 1) { // +1 for radius offset
+                    p.userData.state = 'draining';
+                    p.position.y = planeY + 1; // Snap to floor
+                    
+                    // Slide down the slope (Positive X direction)
+                    p.userData.velocity.y = 0;
+                    p.userData.velocity.x = 1.5; // Slide speed
+                    p.userData.velocity.z = (Math.random() - 0.5) * 0.2; // Little jitter
+                }
+
+                // LOGIC 3: Reset if out of bounds
+                if (p.position.y < -50 || p.position.x > CONFIG.floorSize/2 + 10) {
+                    resetParticle(p);
+                    p.userData.state = 'falling';
+                    p.userData.velocity.set(0, -CONFIG.rainSpeed - Math.random(), 0);
+                }
+            });
+        }
+
+        function setupEvents() {
+            window.addEventListener('resize', () => {
+                camera.aspect = window.innerWidth / window.innerHeight;
+                camera.updateProjectionMatrix();
+                renderer.setSize(window.innerWidth, window.innerHeight);
+            });
+
+            document.getElementById('toggle-top').addEventListener('click', (e) => {
+                isTopVisible = !isTopVisible;
+                topFloorMesh.visible = isTopVisible;
+                e.target.classList.toggle('active');
+                e.target.innerText = isTopVisible ? "Hide Top Floor" : "Show Top Floor";
+            });
+
+            document.getElementById('toggle-water').addEventListener('click', (e) => {
+                isWaterOn = !isWaterOn;
+                e.target.classList.toggle('active');
+                e.target.innerText = isWaterOn ? "Water Simulation: ON" : "Water Simulation: PAUSED";
+                
+                if(!isWaterOn) {
+                    waterParticles.forEach(p => p.visible = false);
+                }
+            });
+
+            document.getElementById('reset-cam').addEventListener('click', () => {
+                controls.reset();
+                camera.position.set(0, 120, 180);
+            });
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            controls.update();
+            updateWater();
+            renderer.render(scene, camera);
+        }
+
+        // Run
+        init();
+
+    </script>
+</body>
+</html>
